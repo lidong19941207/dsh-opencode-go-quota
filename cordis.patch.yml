@@ -1,0 +1,23 @@
+# dsh-opencode-go-quota 的 profile 补丁层。
+#
+# 这一行同时承载两个半边：
+#   Host 半边     lib/index.js   读凭证、轮询 zen/go/v1/usage、暴露同源只读路由
+#   浏览器半边    lib/client.js  由 package.json 的 dsh.client 声明，
+#                                dsh-client-modules 据此在启动图里注册 bundle
+#
+# 行名即本包名，安装进 profile 的 node_modules 后由 Loader 解析。
+
+- insert:
+    - id: opencode-go-quota
+      name: 'dsh-opencode-go-quota'
+      config:
+        # 与 llm-pi-ai 的 providers.opencode-go.apiKeyEnv 保持一致，
+        # 复用模型设置里已有的那把 key，不需要另填一份。
+        apiKeyRef: OPENCODE_GO_API_KEY
+        # 上游轮询间隔（秒）。失败时按 2 的幂退避，上限见 maxBackoffSec。
+        pollIntervalSec: 300
+        # 连续失败时的退避上限（秒）。
+        maxBackoffSec: 1800
+        # 徽标与进度条的配色阈值（百分比）。
+        warnPercent: 80
+        criticalPercent: 95
