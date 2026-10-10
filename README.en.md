@@ -111,6 +111,7 @@ All options live under the `config` key of `cordis.patch.yml`:
 - **Window tag** names the tightest window (`5h` / `Wk` / `Mo` in English, `5h` / `周` / `月` in Chinese)
 - When the sidebar is collapsed only the ring remains; the "Go" inside keeps it recognisable
 - Hovering shows a row background, matching the sidebar's other entries
+- Row height, padding and corner radius reuse the account row's numbers, so the ring lines up with the account avatar below it
 
 ### Hover card
 
@@ -226,7 +227,7 @@ The upstream has no daily window. Deriving one locally would require accumulatin
 No. The console page offers one, but it is served through a login session rather than the API key, so a plugin cannot reach it. This plugin reports the three aggregate percentages.
 
 **How often does the data update?**
-The host polls upstream every 5 minutes (adjustable via `pollIntervalSec`), and the client reads the local snapshot every 30 seconds. Hovering the card re-reads once, and the refresh button at the card's bottom right fetches upstream immediately.
+The host polls upstream every 5 minutes (adjustable via `pollIntervalSec`), and the client reads the local snapshot every 30 seconds. While it has no data at all — right after a start — the client retries every second instead (up to 60 times), so the badge fills itself in without any manual trigger. Hovering the card re-reads once, and the refresh button at the card's bottom right fetches upstream immediately.
 
 **It says "Credential OPENCODE_GO_API_KEY is not configured"?**
 DSH's credential service has no such name. Check that the opencode-go provider key is configured in your model settings.

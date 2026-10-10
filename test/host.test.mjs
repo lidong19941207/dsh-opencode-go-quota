@@ -37,7 +37,20 @@ function resolveKey() {
 }
 
 const KEY = resolveKey()
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * 记录 Host 侧排的定时器间隔，用来验证退避策略。
+ *
+ * 必须在 sleep 定义之前抓住真的 setTimeout：undici 自己也会排连接超时，
+ * 所以只按「出现过哪些间隔」断言，不依赖先后顺序。
+ */
+const timerDelays = []
+const realSetTimeout = globalThis.setTimeout
+globalThis.setTimeout = (fn, ms, ...rest) => {
+  timerDelays.push(ms)
+  return realSetTimeout(fn, ms, ...rest)
+}
+const sleep = (ms) => new Promise((r) => realSetTimeout(r, ms))
 
 const checks = []
 const check = (label, ok, detail) => {
@@ -83,6 +96,7 @@ if (!KEY) {
 // ---- A 上游不可达（不需要真实凭证，key 用假的） ------------------------------
 console.log('A 上游不可达（全新实例，没有旧数据）')
 {
+  const mark = timerDelays.length
   const { ctx, box } = makeCtx(async () => ({ value: 'sk-not-a-real-key' }))
   apply(ctx, { baseUrl: 'https://127.0.0.1:1', pollIntervalSec: 300, maxBackoffSec: 1800 })
   await sleep(3000)
@@ -92,12 +106,34 @@ console.log('A 上游不可达（全新实例，没有旧数据）')
   check('没有旧数据时 usage 为 null', s.usage === null)
   check('没有旧数据时 stale 为 false', s.stale === false)
   check('lastAttemptAt 被记录', typeof s.lastAttemptAt === 'number')
+
+  // 关键回归：一条数据都没有时，指数退避会把下一次重试推到 10 分钟，
+  // 用户对着「—」干等。暂时性失败必须被压到 60 秒。
+  const scheduled = timerDelays.slice(mark)
+  check('**无数据 + 暂时性失败：排了 60 秒的重试**', scheduled.includes(60_000), scheduled.join(', '))
+  check('**没有被指数退避推到 600 秒**', !scheduled.includes(600_000), scheduled.join(', '))
+}
+
+// ---- D 无数据 + 确定性失败：不享受提速（不需要网络） -------------------------
+console.log('\nD 无数据 + 确定性失败（凭证缺失）')
+{
+  const mark = timerDelays.length
+  const { ctx, box } = makeCtx(async () => undefined)
+  apply(ctx, { baseUrl: 'https://127.0.0.1:1', pollIntervalSec: 300, maxBackoffSec: 1800 })
+  await sleep(1500)
+  const s = await readState(box, false)
+  check('state === no-key', s.state === 'no-key', s.state)
+  const scheduled = timerDelays.slice(mark)
+  // 凭证没配不会自己好，提速只是空转；仍按 2 的幂退避（300s × 2^1）。
+  check('**凭证缺失时不做 60 秒提速**', !scheduled.includes(60_000), scheduled.join(', '))
+  check('**凭证缺失时按指数退避（600 秒）**', scheduled.includes(600_000), scheduled.join(', '))
 }
 
 if (KEY) {
   // ---- B 正常路径 -----------------------------------------------------------
   console.log('\nB 正常路径')
   {
+    const mark = timerDelays.length
     const { ctx, box } = makeCtx()
     apply(ctx, { baseUrl: 'https://opencode.ai', pollIntervalSec: 300 })
     await sleep(4000)
@@ -113,6 +149,10 @@ if (KEY) {
     check('三个窗口齐全', !!(s.usage?.rolling && s.usage?.weekly && s.usage?.monthly))
     check('stale === false', s.stale === false)
     check('阈值随快照下发', s.thresholds?.warn === 80 && s.thresholds?.critical === 95)
+    // 拿到数据后不该再提速：按配置的 300 秒走。
+    const scheduled = timerDelays.slice(mark)
+    check('有数据时按配置节奏（300 秒）', scheduled.includes(300_000), scheduled.join(', '))
+    check('有数据时不出现 60 秒提速', !scheduled.includes(60_000), scheduled.join(', '))
   }
 
   // ---- C 先成功后失败：关键回归 ---------------------------------------------

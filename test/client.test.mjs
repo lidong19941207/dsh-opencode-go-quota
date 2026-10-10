@@ -60,6 +60,14 @@ const realUseState = React.useState
 let queue = null
 React.useState = (init) => (queue && queue.length > 0 ? queue.shift() : realUseState(init))
 
+// useEffect 同理：SSR 不跑副作用，想验证「冷启动提速」就得把 effect 抠出来手动跑。
+// effects 非 null 时才记录，避免影响普通渲染用例。
+let effects = null
+React.useEffect = (fn) => {
+  if (effects) effects.push(fn)
+  return undefined
+}
+
 // ---- 3. 假字典函数 -----------------------------------------------------------
 /**
  * 支持 {name} 插值；找不到键时回显键名（与真实 locale 行为一致——键名回显能暴露漏翻译）。
@@ -182,6 +190,7 @@ for (const [name, data, wide, expect] of [
   ],
   ['陈旧数据仍显示旧值', { ...base, ok: false, state: 'bad-key', stale: true, error: 'x' }, true, ['Go', '月 45%']],
   ['无数据', { ...base, ok: false, state: 'network', usage: null, fetchedAt: null, stale: false }, true, ['Go', '—']],
+  ['正在读取', { ...base, ok: false, state: 'pending', usage: null, fetchedAt: null, stale: false }, true, ['Go', '…']],
   ['折叠态只剩环', base, false, ['Go']],
 ]) {
   const r = render({ data, wide, open: false })
@@ -264,6 +273,119 @@ console.log('\n降级与边界：')
   const r = render({ data: boom, wide: true, open: false })
   console.log('  · 错误边界：SSR 下异常穿透（符合预期，React 服务端渲染不调用 getDerivedStateFromError）')
   void r
+}
+
+// ---- 6. 冷启动提速：把 effect 抠出来手动跑 -----------------------------------
+//
+// 现象回归：DSH 刚重启时徽标停在「—」，必须把鼠标划过徽标（悬停会补读一次）或等上
+// 半分钟才出数字。根因是 Host 首次上游拉取还没回来，客户端却按 30 秒的常规节奏干等。
+const realFetch = globalThis.fetch
+const realSetTimeout = globalThis.setTimeout
+const realClearTimeout = globalThis.clearTimeout
+
+const pendingSnapshot = {
+  ok: false,
+  state: 'pending',
+  usage: null,
+  fetchedAt: null,
+  lastAttemptAt: null,
+  stale: false,
+  error: null,
+  thresholds: { warn: 80, critical: 95 },
+  apiKeyRef: 'OPENCODE_GO_API_KEY',
+}
+
+/**
+ * 跑一次徽标的数据循环，返回它排出的定时器间隔序列。
+ * @param body - 假路由每次返回的快照；传 'throw' 模拟本地路由尚不可达。
+ * @param steps - 手动触发多少次 tick。
+ */
+async function scheduleDelays(body, steps) {
+  const delays = []
+  let pending = null
+  globalThis.setTimeout = (fn, delay) => {
+    delays.push(delay)
+    pending = fn
+    return delays.length
+  }
+  globalThis.clearTimeout = () => {}
+  globalThis.fetch = async () => {
+    if (body === 'throw') throw new Error('route not ready')
+    return { json: async () => body }
+  }
+  effects = []
+  render({ data: pendingSnapshot, wide: true, open: false })
+  const effect = effects[0]
+  effects = null
+  const cleanup = effect()
+  for (let i = 0; i < steps; i += 1) {
+    await new Promise((r) => realSetTimeout(r, 0))
+    const fn = pending
+    pending = null
+    if (!fn) break
+    fn()
+  }
+  await new Promise((r) => realSetTimeout(r, 0))
+  cleanup()
+  globalThis.fetch = realFetch
+  globalThis.setTimeout = realSetTimeout
+  globalThis.clearTimeout = realClearTimeout
+  return delays
+}
+
+console.log('\n冷启动提速：')
+{
+  const delays = await scheduleDelays(pendingSnapshot, 61)
+  check('**pending 时下一次读取压到 1 秒**', delays[0] === 1_000, String(delays[0]))
+  check(
+    '**连续 60 次都是 1 秒**',
+    delays.slice(0, 60).every((d) => d === 1_000),
+    delays.slice(0, 60).join(', '),
+  )
+  check('**预算用完后回到 30 秒常规节奏**', delays[60] === 30_000, String(delays[60]))
+}
+{
+  const delays = await scheduleDelays(base, 3)
+  check('已有数据时不做提速（30 秒）', delays[0] === 30_000, String(delays[0]))
+}
+{
+  const delays = await scheduleDelays({ ...pendingSnapshot, state: 'no-key' }, 3)
+  check('凭证没配属于确定性失败，不提速（30 秒）', delays[0] === 30_000, String(delays[0]))
+}
+{
+  const delays = await scheduleDelays('throw', 3)
+  check('本地路由不可达时提速（1 秒）', delays[0] === 1_000, String(delays[0]))
+}
+
+// ---- 7. 与账号行对齐的几何 ---------------------------------------------------
+//
+// 徽标行紧挨着下方账号行（`settings.launcher` 里的 AccountMenu）。两行的盒子必须
+// 取同一组数字，否则环与头像会差 4px，视觉上明显不成对。
+console.log('\n对齐几何（对齐下方账号行）：')
+{
+  const wide = render({ data: base, wide: true, open: false }).html
+  check('展开态按钮高 44px', wide.includes('height:44px'), wide.slice(0, 240))
+  check('展开态内边距 6px', wide.includes('padding:6px'))
+  check('展开态盒子比容器宽 4px（抵消账号行的负外边距）', wide.includes('width:calc(100% + 4px)'))
+  check('展开态左右各外扩 2px', wide.includes('margin:0 -2px'))
+  check('圆角与账号行一致（--dsw-radius-md）', wide.includes('border-radius:var(--dsw-radius-md, 12px)'))
+}
+{
+  const rail = render({ data: base, wide: false, open: false }).html
+  check('折叠态收成 36px 方块', rail.includes('width:36px') && rail.includes('height:36px'), rail.slice(0, 240))
+  check('折叠态去掉内边距', rail.includes('padding:0'))
+}
+
+// ---- 8. 环的几何 -------------------------------------------------------------
+console.log('\n环：')
+{
+  const html = render({ data: base, wide: true, open: false }).html
+  // 24px 直径、2px 描边 → 内径 20px；中心字 10.5px，左右各余约 3.2px。
+  check('环直径 24px（与头像同径）', html.includes('width="24" height="24"'))
+  check('描边 2px', html.includes('stroke-width="2"'))
+  check('中心字 10.5px', html.includes('font-size="10.5px"'))
+  check('中心字用正文色，不与弧抢颜色', html.includes('fill="var(--dsw-alias-label-primary)"'))
+  check('中心字仍是品牌字「Go」', html.includes('>Go</text>'))
 }
 
 // ---- 汇总 -------------------------------------------------------------------

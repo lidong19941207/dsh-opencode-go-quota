@@ -1,6 +1,6 @@
 {
   "name": "dsh-opencode-go-quota",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness 插件：在侧边栏实时显示 OpenCode Go 的 5 小时 / 周 / 月额度",
   "keywords": [
     "dsh",
