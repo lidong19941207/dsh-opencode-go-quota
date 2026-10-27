@@ -26,18 +26,31 @@
 
 ## 特性
 
-- **环内嵌「Go」** —— 环同时承担进度指示与品牌标识，不占用额外横向空间
-- **只报最紧的窗口** —— 三个窗口各有独立上限，显示最接近触顶的那个
+- **环内嵌品牌字** —— 环同时承担进度指示与品牌标识（`Go` / `DS`），不占用额外横向空间
+- **只报最紧的窗口** —— 同一家有多个窗口时，显示最接近触顶的那个
+- **窗口数量由上游决定** —— 不写死「三个窗口」，按套餐给窗口的来源也能正确展示
 - **失败不丢数据** —— 上游不可用时保留上一次成功的数据并标记为过期
 - **凭证复用** —— 直接读取模型设置里已配置的 API key，无需另填一份
 - **中英双语** —— 跟随 DSH 的语言设置即时切换
 - **失败退避** —— 连续失败时按指数放大轮询间隔
+- **故障隔离** —— 每个额度源各自一个调度器，一家挂了不影响别家的节奏与数据
 
 ---
 
-## 额度模型
+## 额度源
 
-OpenCode Go 的额度由三个**平级**窗口组成，任一打满即触发限流：
+插件内置两个适配器，各自独立取数、独立退避：
+
+| ID | 名称 | 凭证来源 | 额度形态 |
+|---|---|---|---|
+| `opencode-go` | OpenCode Go | DSH 凭证 `OPENCODE_GO_API_KEY`（与模型设置共用） | 5 小时 / 周 / 月三个百分比窗口 |
+| `deepseek` | DeepSeek | DSH 凭证 `DEEPSEEK_API_KEY` | 账户余额（无窗口） |
+
+删掉 `providers:` 下某一行即关掉那一家；写 `enabled: false` 可临时停用而保留配置。
+
+### OpenCode Go
+
+额度由三个**平级**窗口组成，任一打满即触发限流：
 
 | 窗口 | 上游字段 | 额度 | 重置规则 |
 |---|---|---|---|
@@ -83,16 +96,32 @@ dsh plugin --profile desktop add /绝对路径/dsh-opencode-go-quota
 
 ## 配置
 
-配置项位于 `cordis.patch.yml` 的 `config` 段：
+配置项位于 `cordis.patch.yml` 的 `config` 段。
+
+**全局**（对每个额度源生效，可被 provider 级同名字段覆盖）：
 
 | 键 | 默认值 | 说明 |
 |---|---|---|
-| `apiKeyRef` | `OPENCODE_GO_API_KEY` | 凭证引用名，与模型设置保持一致 |
-| `baseUrl` | `https://opencode.ai` | 上游基址 |
 | `pollIntervalSec` | `300` | 上游轮询间隔（秒），下限 30 |
 | `maxBackoffSec` | `1800` | 连续失败时的退避上限（秒） |
 | `warnPercent` | `80` | 警告阈值，达到后转为琥珀色 |
 | `criticalPercent` | `95` | 危急阈值，达到后转为红色 |
+
+**`providers.<id>`** —— 每个额度源一行，`enabled: false` 可停用：
+
+| 键 | 适用于 | 说明 |
+|---|---|---|
+| `enabled` | 全部 | `false` 停用该额度源 |
+| `apiKeyRef` | opencode-go / deepseek | 凭证引用名，与模型设置保持一致 |
+| `baseUrl` | 全部 | 上游基址 |
+
+```yaml
+providers:
+  opencode-go:
+    apiKeyRef: OPENCODE_GO_API_KEY
+  deepseek:
+    apiKeyRef: DEEPSEEK_API_KEY
+```
 
 ---
 
@@ -108,18 +137,26 @@ dsh plugin --profile desktop add /绝对路径/dsh-opencode-go-quota
 
 - **弧长**为最紧窗口的已用百分比
 - **配色**随阈值变化：低于 80% 为绿色，80% 起为琥珀色，95% 起为红色
-- **窗口标识**为当前最紧的窗口（中文 `5h` / `周` / `月`，英文 `5h` / `Wk` / `Mo`）
-- 侧边栏折叠时仅显示环，环内的「Go」保证它仍可辨识
+- **窗口标识**为当前最紧的窗口（中文 `5h` / `周` / `月`）
+- **百分比**整数不带小数点，有小数才保留一位（`6.5%`）
+- 侧边栏折叠时仅显示环，环内的品牌字保证它仍可辨识
 - 悬停时整行显示底色，与侧边栏其他条目一致
 - 行高、内边距、圆角与下方账号行取同一组数字，环与账号头像左对齐
 
+### 多额度源
+
+每家一页，左右滑动切换；徽标只报当前页那一家的最紧窗口，不做跨家聚合——
+两家各自的额度是两笔独立预算，合并成一个数字会让人误以为是同一份额度。
+页码圆点按各自状态着色，所以停在 A 页时 B 页变红也一眼看得见。
+
 ### 悬停卡片
 
-鼠标划过展开，显示三个窗口的进度条、重置倒计时与数据新鲜度。
+鼠标划过展开，显示各窗口的进度条、重置倒计时与数据新鲜度。
 
 - 移出后留有 260 毫秒宽限期，便于指针移入卡片
 - 点击徽标或在卡片内按下会固定卡片，之后可自由选中文字、点击刷新
 - `Esc`、点击外部或再次点击徽标均可关闭
+- 滚动窗口（`activity_triggered`）没有确定重置时刻时显示「按使用滚动重置」
 
 卡片右上角显示数据状态：
 
@@ -160,6 +197,8 @@ dsh plugin --profile desktop add /绝对路径/dsh-opencode-go-quota
 
 ### 数据来源
 
+**OpenCode Go**
+
 ```
 GET https://opencode.ai/zen/go/v1/usage
 Authorization: Bearer <OPENCODE_GO_API_KEY>
@@ -180,6 +219,13 @@ Authorization: Bearer <OPENCODE_GO_API_KEY>
 | 401 | `AuthError` | key 缺失或无效 |
 | 403 | `EntitlementError` | 当前账号未订阅 OpenCode Go |
 
+**DeepSeek**
+
+```
+GET https://api.deepseek.com/user/balance
+Authorization: Bearer <DEEPSEEK_API_KEY>
+```
+
 ---
 
 ## 开发
@@ -194,17 +240,18 @@ pnpm test
 ```
 
 **`test/client.test.mjs`** —— 渲染测试。
-为 bundle 提供模拟的 `window.__ModuleLoader__` 门面后求值，以仅识别 `react` 的 `require` 执行 factory。组件状态通过替换 `React.useState` 为队列注入（SSR 不执行 effect）。覆盖六种徽标状态、四种卡片状态、中英双语以及 `createPortal` 降级分支。
+为 bundle 提供模拟的 `window.__ModuleLoader__` 门面后求值，以仅识别 `react` 的 `require` 执行 factory。组件状态通过替换 `React.useState` 为队列注入（SSR 不执行 effect）。覆盖徽标状态、卡片状态、中英双语、`createPortal` 降级分支，以及动态窗口命名。
 
 **`test/host.test.mjs`** —— Host 逻辑测试。
-构造最小 Cordis 上下文执行 `apply()`，再通过插件自身注册的路由读回快照。覆盖正常路径、上游不可达，以及失败时保留既有数据的场景。
+构造最小 Cordis 上下文执行 `apply()`，再通过插件自身注册的路由读回快照。覆盖正常路径、上游不可达、失败时保留既有数据，以及各适配器的纯映射（用假 `fetchImpl`，不联网）。
 
-Host 测试需要真实凭证，按以下顺序获取：
+Host 测试的联网用例需要真实凭证，按以下顺序获取：
 
 1. 环境变量 `OPENCODE_GO_API_KEY`
 2. `~/.dsh/.credentials.yaml` 中的 `OPENCODE_GO_API_KEY`
 
-两处均无配置时，联网用例会自动跳过。
+两处均无配置时，联网用例会自动跳过。若 key 有效但**没有 Go 订阅**（上游 403），
+B/C 两节会自动改断言 `no-subscription` 分支，不会因账号状态让测试变红。
 
 ### 修改代码
 
@@ -236,8 +283,8 @@ Host 每 5 分钟向上游拉取一次（可通过 `pollIntervalSec` 调整）�
 
 ## 已知限制
 
-- 上游接口为控制台内部路由，非公开承诺的 API。因此 `baseUrl` 可配置，解析失败时降级展示而非崩溃。
-- `percent` 为整数（服务端执行 `Math.floor`），粒度较粗。
+- OpenCode Go 的上游接口为控制台内部路由，非公开承诺的 API。因此 `baseUrl` 可配置，解析失败时降级展示而非崩溃。
+- OpenCode Go 的 `percent` 为整数（服务端执行 `Math.floor`），粒度较粗。
 - 仅提供中文与英文词典。locale fallback 链必须终结于 `en`，其他语言将回落到英文。
 - Host 侧的原始错误文本为中文，仅在状态码未知时作为兜底展示。
 
