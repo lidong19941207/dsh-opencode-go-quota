@@ -1,7 +1,7 @@
 # dsh-opencode-go-quota 的 profile 补丁层。
 #
 # 这一行同时承载两个半边：
-#   Host 半边     lib/index.js   读凭证、轮询 zen/go/v1/usage、暴露同源只读路由
+#   Host 半边     lib/index.js   按 lib/providers 注册表装配各额度源，暴露同源只读路由
 #   浏览器半边    lib/client.js  由 package.json 的 dsh.client 声明，
 #                                dsh-client-modules 据此在启动图里注册 bundle
 #
@@ -11,13 +11,24 @@
     - id: opencode-go-quota
       name: 'dsh-opencode-go-quota'
       config:
-        # 与 llm-pi-ai 的 providers.opencode-go.apiKeyEnv 保持一致，
-        # 复用模型设置里已有的那把 key，不需要另填一份。
-        apiKeyRef: OPENCODE_GO_API_KEY
-        # 上游轮询间隔（秒）。失败时按 2 的幂退避，上限见 maxBackoffSec。
+        # 全局节奏与配色阈值；provider 级同名配置可以覆盖。
+        # 失败时按 2 的幂退避，上限见 maxBackoffSec。
         pollIntervalSec: 300
-        # 连续失败时的退避上限（秒）。
         maxBackoffSec: 1800
-        # 徽标与进度条的配色阈值（百分比）。
         warnPercent: 80
         criticalPercent: 95
+
+        # 每个额度源一行。删掉某一行就等于关掉那一家；
+        # 也可以写 enabled: false 临时停用而不用删配置。
+        providers:
+          # OpenCode Go：5 小时 / 周 / 月三个百分比窗口。
+          # apiKeyRef 与模型设置里 opencode-go provider 的 key 保持一致，
+          # 复用同一把，不需要另填一份。
+          opencode-go:
+            apiKeyRef: OPENCODE_GO_API_KEY
+
+          # DeepSeek 官方余额：只有余额、没有窗口，徽标会画成实心圆底。
+          # 需要 DSH 凭证里有 DEEPSEEK_API_KEY（在模型设置里配 DeepSeek 官方 provider 时写入）。
+          # 没配也不影响另一家，只会在自己那一行显示「凭证未配置」。
+          deepseek:
+            apiKeyRef: DEEPSEEK_API_KEY
